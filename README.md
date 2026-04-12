@@ -1,2 +1,3 @@
 # autoclicker
-Simple autoclicker tool on rust
+Simple autoclicker tool on Rust
+For legacy software automation, game cheating, etc...
