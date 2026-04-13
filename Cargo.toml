@@ -15,5 +15,11 @@ opt-level = 3
 # strip = true       # Automatically strip symbols from the binary.
 # panic = 'abort'    # or 'unwind' for safe memory cleanup
 
+[build]
+rustflags = ["-C", "target-feature=+crt-static"]
+
 [target.x86_64-pc-windows-gnu]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.x86_64-pc-windows-msvc]
 rustflags = ["-C", "target-feature=+crt-static"]
