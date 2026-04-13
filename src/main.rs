@@ -1,50 +1,47 @@
-use enigo::{
-    Button, Coordinate, Direction, Enigo, Keyboard, Mouse, Settings,
-};
+use enigo::{Button, Coordinate, Direction, Enigo, Keyboard, Mouse, Settings};
 use serde::{Deserialize, Serialize};
 use std::env;
 use std::fs;
 use std::io::{self, Write};
 use std::path::PathBuf;
-use std::process;
 use std::thread;
 use std::time::Duration;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
-struct Action {
+#[serde(tag = "type")]
+enum Step {
+    #[serde(rename = "click")]
+    Click {
+        x: i32,
+        y: i32,
+        #[serde(default = "default_delay")]
+        delay: f64,
+    },
     #[serde(rename = "type")]
-    action_type: String,
-
-    #[serde(default)]
-    x: i32,
-    #[serde(default)]
-    y: i32,
-
-    #[serde(default)]
-    text: String,
-
-    #[serde(default = "default_delay")]
-    delay: f64,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-struct Workflow {
-    repetitions: u32,
-    actions: Vec<Action>,
+    Type {
+        text: String,
+        #[serde(default = "default_delay")]
+        delay: f64,
+    },
+    #[serde(rename = "loop")]
+    Loop {
+        repetitions: u32,
+        actions: Vec<Step>,
+    },
 }
 
 fn default_delay() -> f64 {
-    1.0
+    0.1  // default delay in sec. to meet possible GUI freezes
 }
 
 fn main() {
-    println!("🚀 Rust Autoclicker Suite");
-    println!("================================\n");
+    println!("🚀 Rust Legacy Autoclicker Suite");
+    println!("==================================================\n");
 
     loop {
-        println!("1. Run automation (load workflow.json or custom file)");
-        println!("2. Record new workflow (mouse clicks + text)");
-        println!("3. Show live mouse position helper");
+        println!("1. Run automation");
+        println!("2. Record new workflow");
+        println!("3. Show live mouse position");
         println!("4. Exit\n");
 
         print!("Choose (1-4): ");
@@ -62,118 +59,86 @@ fn main() {
                 println!("👋 Goodbye!");
                 break;
             }
-            _ => println!("❌ Invalid option, try again.\n"),
+            _ => println!("❌ Invalid option.\n"),
         }
     }
 }
 
-// ====================== 1. RUN AUTOMATION ======================
+// ====================== EXECUTION ======================
 fn run_automation() {
-    let workflow = load_workflow();
-    let repetitions = workflow.repetitions;
-    let actions = workflow.actions;
+    let (steps, top_repetitions) = load_workflow();
 
-    println!("✅ Loaded {} actions × {} repetitions", actions.len(), repetitions);
-
-    let mut enigo = Enigo::new(&Settings::default()).expect("Failed to initialize Enigo");
-
-    println!("\nPress ENTER to START (Ctrl+C to stop)...");
-    let mut input = String::new();
-    std::io::stdin().read_line(&mut input).unwrap();
-
-    for rep in 1..=repetitions {
-        println!("\n🔄 Repetition {}/{}", rep, repetitions);
-
-        for action in &actions {
-            if let Err(e) = execute_action(&mut enigo, action, rep) {
-                eprintln!("❌ Error: {}", e);
-                process::exit(1);
-            }
-        }
+    if steps.is_empty() {
+        println!("⚠️  No actions to run. Please record a workflow first (option 2).");
+        pause_to_menu();
+        return;
     }
 
-    println!("\n✅ Automation completed successfully!");
+    println!("✅ Loaded workflow — {} top-level actions × {} repetitions", 
+             steps.len(), top_repetitions);
+
+    let mut enigo = Enigo::new(&Settings::default()).expect("Enigo init failed");
+
+    println!("\nPress ENTER to START the workflow...");
+    let _ = std::io::stdin().read_line(&mut String::new());
+
+    // Treat top-level as a regular loop (even if repetitions = 1)
+    for i in 1..=top_repetitions {
+        println!("🔄 Top-level iteration {}/{}", i, top_repetitions);
+        let mut rep_stack = vec![i];
+        execute_steps(&mut enigo, &steps, &mut rep_stack);
+    }
+
+    println!("\n✅ Workflow completed successfully!");
     pause_to_menu();
 }
 
-fn execute_action(enigo: &mut Enigo, action: &Action, rep: u32) -> Result<(), String> {
-    match action.action_type.as_str() {
-        "click" => {
-            enigo
-                .move_mouse(action.x, action.y, Coordinate::Abs)
-                .map_err(|e| e.to_string())?;
-            enigo
-                .button(Button::Left, Direction::Click)
-                .map_err(|e| e.to_string())?;
-            println!("✅ Clicked at ({}, {})", action.x, action.y);
+fn execute_steps(enigo: &mut Enigo, steps: &[Step], rep_stack: &mut Vec<u32>) {
+    for step in steps {
+        match step {
+            Step::Click { x, y, delay } => {
+                let _ = enigo.move_mouse(*x, *y, Coordinate::Abs);
+                let _ = enigo.button(Button::Left, Direction::Click);
+                println!("✅ Clicked at ({}, {})", x, y);
+                thread::sleep(Duration::from_secs_f64(*delay));
+            }
+            Step::Type { text, delay } => {
+                let mut final_text = text.clone();
+                // {$} = closest (innermost) repetition number
+                if let Some(&last_rep) = rep_stack.last() {
+                    final_text = final_text.replace("{$}", &last_rep.to_string());
+                }
+                let _ = enigo.text(&final_text);
+                println!("✅ Typed: {}", final_text);
+                thread::sleep(Duration::from_secs_f64(*delay));
+            }
+            Step::Loop { repetitions, actions } => {
+                for i in 1..=*repetitions {
+                    println!("   🔄 Loop iteration {}/{}", i, repetitions);
+                    rep_stack.push(i);
+                    execute_steps(enigo, actions, rep_stack);
+                    rep_stack.pop();
+                }
+            }
         }
-        "type" => {
-            let final_text = action.text.replace("{rep}", &rep.to_string());
-            enigo.text(&final_text).map_err(|e| e.to_string())?;
-            println!("✅ Typed: {}", final_text);
-        }
-        _ => println!("⚠️ Unknown action type: {}", action.action_type),
     }
-
-    thread::sleep(Duration::from_secs_f64(action.delay));
-    Ok(())
 }
 
-// // ====================== 2. RECORDER ======================
-// fn record_workflow() {
-//     println!("\n🎥 Recorder started");
-//     println!("Instructions:");
-//     println!("   • Move mouse to desired position");
-//     println!("   • Press ENTER          → Record CLICK");
-//     println!("   • Type 't' + ENTER     → Record TEXT field");
-//     println!("   • Type 'q' + ENTER     → Finish and print JSON\n");
-
-//     let mut actions: Vec<Action> = Vec::new();
-
-//     loop {
-//         print!("\nCommand (ENTER = click, t = text, q = quit): ");
-//         io::stdout().flush().unwrap();
-
-//         let mut cmd = String::new();
-//         io::stdin().read_line(&mut cmd).unwrap();
-//         let cmd = cmd.trim().to_lowercase();
-
-//         match cmd.as_str() {
-//             "q" => break,
-//             "t" => record_text_action(&mut actions),
-//             "" => record_click_action(&mut actions),
-//             _ => println!("❌ Unknown command."),
-//         }
-//     }
-
-//     let workflow = Workflow {
-//         repetitions: 5,
-//         actions,
-//     };
-
-//     let json = serde_json::to_string_pretty(&workflow).unwrap();
-
-//     println!("\n{}", "=".repeat(70));
-//     println!("✅ RECORDING FINISHED! Copy the JSON below:\n");
-//     println!("{}", json);
-//     println!("\n{}", "=".repeat(70));
-
-//     pause_to_menu();
-// }
-
-// ====================== 2. RECORDER ======================
+// ====================== RECORDER ======================
 fn record_workflow() {
-    println!("\n🎥 Recorder started");
-    println!("Instructions:");
-    println!("   • Move mouse to desired position");
-    println!("   • Press ENTER          → Record CLICK");
-    println!("   • Type 't' + ENTER     → Record TEXT field");
-    println!("   • Type 'q' + ENTER     → Finish and print JSON\n");
+    println!("\n🎥 Let's record your workflow!");
+    println!("Commands:");
+    println!("   ENTER → Record Click (default delay 0.1s)");
+    println!("   t     → Record Type   (use {{$}} to type current loop iteration number)");
+    println!("   [     → Start new nested loop");
+    println!("   ]     → End current (innermost) loop");
+    println!("   q     → Finish recording\n");
 
-    let mut actions: Vec<Action> = Vec::new();
+    let steps = Vec::new();
+    let mut loop_stack: Vec<Vec<Step>> = vec![steps];
 
     loop {
-        print!("\nCommand (ENTER = click, t = text, q = quit): ");
+        print!("\nCommand (ENTER/t/[/]/q): ");
         io::stdout().flush().unwrap();
 
         let mut cmd = String::new();
@@ -182,154 +147,164 @@ fn record_workflow() {
 
         match cmd.as_str() {
             "q" => break,
-            "t" => record_text_action(&mut actions),
-            "" => record_click_action(&mut actions),
-            _ => println!("❌ Unknown command."),
+            "[" => start_new_loop(&mut loop_stack),
+            "]" => end_current_loop(&mut loop_stack),
+            "t" => record_type_action(&mut loop_stack),
+            "" => record_click_action(&mut loop_stack),
+            _ => println!("Unknown command"),
         }
     }
 
-    // === NEW: Ask for repetitions ===
-    println!("\n{}", "=".repeat(60));
-    print!("How many repetitions do you want? (default: 1): ");
-    io::stdout().flush().unwrap();
+    let final_steps = loop_stack.remove(0);
 
+    print!("\nTop-level repetitions (default 1): ");
+    io::stdout().flush().unwrap();
     let mut rep_str = String::new();
     io::stdin().read_line(&mut rep_str).unwrap();
-    let repetitions: u32 = rep_str.trim().parse().unwrap_or(1);
+    let top_reps: u32 = rep_str.trim().parse().unwrap_or(1);
 
-    let workflow = Workflow {
-        repetitions,
-        actions,
-    };
+    let workflow = serde_json::json!({
+        "actions": final_steps,
+        "repetitions": top_reps
+    });
 
     let json = serde_json::to_string_pretty(&workflow).unwrap();
 
-    println!("\n✅ RECORDING FINISHED!");
-    println!("Repetitions set to: {}", repetitions);
-    println!("\nCopy the JSON below and save as workflow.json:\n");
+    println!("\n{}", "=".repeat(80));
+    println!("✅ RECORDING FINISHED!");
     println!("{}", json);
-    println!("\n{}", "=".repeat(60));
+    println!("{}", "=".repeat(80));
 
     pause_to_menu();
 }
 
-
-fn record_click_action(actions: &mut Vec<Action>) {
-    let enigo = Enigo::new(&Settings::default()).expect("Enigo init failed");
-    let (x, y) = enigo.location().unwrap_or((0, 0));
-
-    print!("   Click at ({}, {}) → Delay (seconds, default 1.0): ", x, y);
-    io::stdout().flush().unwrap();
-
-    let mut delay_str = String::new();
-    io::stdin().read_line(&mut delay_str).unwrap();
-    let delay: f64 = delay_str.trim().parse().unwrap_or(1.0);
-
-    actions.push(Action {
-        action_type: "click".to_string(),
-        x,
-        y,
-        text: String::new(),
-        delay,
-    });
-    println!("   ✅ Recorded CLICK at ({}, {}) | delay = {}s", x, y, delay);
+fn start_new_loop(stack: &mut Vec<Vec<Step>>) {
+    stack.push(Vec::new());
+    println!("   ➕ Started new inner loop");
 }
 
-fn record_text_action(actions: &mut Vec<Action>) {
-    let enigo = Enigo::new(&Settings::default()).expect("Enigo init failed");
+fn end_current_loop(stack: &mut Vec<Vec<Step>>) {
+    if stack.len() <= 1 {
+        println!("   ⚠️ No open loop to close");
+        return;
+    }
+
+    print!("   How many repetitions for this loop? (default 1): ");
+    io::stdout().flush().unwrap();
+    let mut rep_str = String::new();
+    io::stdin().read_line(&mut rep_str).unwrap();
+    let repetitions: u32 = rep_str.trim().parse().unwrap_or(1);
+
+    let inner = stack.pop().unwrap();
+    let loop_step = Step::Loop { repetitions, actions: inner };
+    stack.last_mut().unwrap().push(loop_step);
+    println!("   ✅ Closed loop with {} repetitions", repetitions);
+}
+
+fn record_click_action(stack: &mut Vec<Vec<Step>>) {
+    let enigo = Enigo::new(&Settings::default()).expect("Enigo failed");
     let (x, y) = enigo.location().unwrap_or((0, 0));
 
-    println!("   Text field at ({}, {})", x, y);
-    print!("   Base text (use {{rep}} for repetition): ");
+    print!("   Click at ({}, {}) → delay (default 0.1): ", x, y);
     io::stdout().flush().unwrap();
+    let mut d = String::new();
+    io::stdin().read_line(&mut d).unwrap();
+    let delay: f64 = d.trim().parse().unwrap_or(0.1);
 
+    stack.last_mut().unwrap().push(Step::Click { x, y, delay });
+    println!("   ✅ Click recorded");
+}
+
+fn record_type_action(stack: &mut Vec<Vec<Step>>) {
+    // let _enigo = Enigo::new(&Settings::default()).expect("Enigo failed");
+    // let (_x, _y) = enigo.location().unwrap_or((0, 0));
+
+    print!("   Text (use {{$}} for current loop number): ");
+    io::stdout().flush().unwrap();
     let mut text = String::new();
     io::stdin().read_line(&mut text).unwrap();
     let text = text.trim().to_string();
 
-    print!("   Delay after typing (seconds, default 2.0): ");
+    print!("   Delay (default 0.1): ");
     io::stdout().flush().unwrap();
+    let mut d = String::new();
+    io::stdin().read_line(&mut d).unwrap();
+    let delay: f64 = d.trim().parse().unwrap_or(0.1);
 
-    let mut delay_str = String::new();
-    io::stdin().read_line(&mut delay_str).unwrap();
-    let delay: f64 = delay_str.trim().parse().unwrap_or(2.0);
-
-    actions.push(Action {
-        action_type: "type".to_string(),
-        x: 0,
-        y: 0,
-        text: text.clone(),
-        delay,
-    });
-    println!("   ✅ Recorded TYPE \"{}\" | delay = {}s", text, delay);
+    stack.last_mut().unwrap().push(Step::Type { text, delay });
+    println!("   ✅ Type recorded");
 }
 
-// ====================== 3. LIVE MOUSE POSITION ======================
+// ====================== LOADING ======================
+fn load_workflow() -> (Vec<Step>, u32) {
+    let path = if let Some(arg) = env::args().nth(1) {
+        PathBuf::from(arg)
+    } else {
+        let mut p = env::current_exe().unwrap();
+        p.pop();
+        p.push("workflow.json");
+        p
+    };
+
+    if !path.exists() {
+        println!("❌ workflow.json not found.");
+        println!("Please record a new workflow first using option 2.\n");
+        
+        print!("Enter full path to workflow file (or press Enter to cancel): ");
+        io::stdout().flush().unwrap();
+        
+        let mut input = String::new();
+        io::stdin().read_line(&mut input).unwrap();
+        let input = input.trim();
+
+        if input.is_empty() {
+            return (Vec::new(), 1);
+        }
+        let custom_path = PathBuf::from(input);
+        return load_file(&custom_path);
+    }
+
+    load_file(&path)
+}
+
+fn load_file(path: &PathBuf) -> (Vec<Step>, u32) {
+    let content = match fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(_) => return (Vec::new(), 1),
+    };
+
+    let data: serde_json::Value = match serde_json::from_str(&content) {
+        Ok(d) => d,
+        Err(_) => return (Vec::new(), 1),
+    };
+
+    let repetitions = data.get("repetitions")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(1) as u32;
+
+    let steps: Vec<Step> = if let Some(actions) = data.get("actions") {
+        serde_json::from_value(actions.clone()).unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+
+    println!("✅ Loaded: {}", path.file_name().unwrap().to_string_lossy());
+    (steps, repetitions)
+}
+
 fn show_mouse_position() {
     let enigo = Enigo::new(&Settings::default()).expect("Enigo init failed");
-
-    println!("\n🖱️  Live mouse position (Ctrl+C to stop)\n");
-
+    println!("\n🖱️ Live position (Ctrl+C to stop)\n");
     loop {
         if let Ok((x, y)) = enigo.location() {
-            print!("\rX: {:4} | Y: {:4}   ", x, y);
+            print!("\rX: {:4} | Y: {:4}", x, y);
             io::stdout().flush().unwrap();
         }
         thread::sleep(Duration::from_millis(200));
     }
 }
 
-// ====================== HELPERS ======================
 fn pause_to_menu() {
-    println!("\nPress ENTER to return to main menu...");
-    let mut input = String::new();
-    let _ = std::io::stdin().read_line(&mut input);
-}
-
-// ====================== WORKFLOW LOADING ======================
-fn load_workflow() -> Workflow {
-    if let Some(arg) = env::args().nth(1) {
-        if let Ok(w) = load_file(&PathBuf::from(arg)) {
-            return w;
-        }
-    }
-
-    if let Ok(mut path) = env::current_exe() {
-        path.pop();
-        path.push("workflow.json");
-        if let Ok(w) = load_file(&path) {
-            return w;
-        }
-    }
-
-    println!("\n❌ workflow.json not found.");
-    loop {
-        println!("Enter full path to workflow JSON (or press Enter to cancel):");
-        let mut input = String::new();
-        std::io::stdin().read_line(&mut input).unwrap();
-        let trimmed = input.trim();
-
-        if trimmed.is_empty() {
-            println!("Cancelled.");
-            process::exit(0);
-        }
-
-        let path = PathBuf::from(trimmed);
-        if let Ok(w) = load_file(&path) {
-            return w;
-        }
-    }
-}
-
-fn load_file(path: &PathBuf) -> Result<Workflow, String> {
-    if !path.exists() {
-        return Err(format!("File not found: {}", path.display()));
-    }
-
-    let content = fs::read_to_string(path).map_err(|e| e.to_string())?;
-    let workflow: Workflow = serde_json::from_str(&content)
-        .map_err(|e| format!("JSON error: {}", e))?;
-
-    println!("✅ Loaded: {}", path.file_name().unwrap().to_string_lossy());
-    Ok(workflow)
+    println!("\nPress ENTER to return to menu...");
+    let _ = std::io::stdin().read_line(&mut String::new());
 }
