@@ -327,13 +327,13 @@ fn load_file(path: &PathBuf) -> (Vec<Step>, u32) {
 
 fn show_mouse_position() {
     let enigo = Enigo::new();
-    println!("\nLive position (go to 0,0 position to stop)\n");
+    println!("\nLive position \ngo to [0, 0] position to stop\n");
     loop {
         let (x, y) = enigo.mouse_location();
         print!("\rX: {:4} | Y: {:4}", x, y);
         io::stdout().flush().unwrap();
         thread::sleep(Duration::from_millis(200));
-        if x=0 || y=0 {
+        if x==0 && y==0 {
             break
         } else {
             continue
