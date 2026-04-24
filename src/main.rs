@@ -197,9 +197,7 @@ fn record_workflow() {
     io::stdin().read_line(&mut save_answer).unwrap();
     let save_answer = save_answer.trim().to_lowercase();
 
-    if save_answer.is_empty() || save_answer == "n" || save_answer == "N"{
-        println!("Workflow not saved.");
-    } else {
+    if save_answer == "y" || save_answer == "Y"{
         let mut save_path = env::current_exe().unwrap();
         save_path.pop();
         save_path.push("workflow.json");
@@ -208,6 +206,8 @@ fn record_workflow() {
             Ok(_) => println!("Workflow saved to: {}", save_path.display()),
             Err(e) => println!("Failed to save workflow: {}", e),
         }
+    } else {
+        println!("Workflow not saved.");
     }
 
     pause_to_menu();
